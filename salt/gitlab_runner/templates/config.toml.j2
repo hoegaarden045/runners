@@ -1,0 +1,35 @@
+# Managed by SaltStack GitOps. DO NOT EDIT DIRECTLY ON HOST.
+{%- set auth_file = '/etc/gitlab-runner/.runner_auth' -%}
+{%- if salt['file.file_exists'](auth_file) -%}
+  {%- set auth = salt['file.read'](auth_file) | load_json -%}
+  {%- set runner_token = auth.get('token', '') -%}
+  {%- set runner_id = auth.get('id', 0) -%}
+{%- else -%}
+  {%- set runner_token = '' -%}
+  {%- set runner_id = 0 -%}
+{%- endif -%}
+
+concurrent = {{ runner.concurrency | default(4) }}
+check_interval = {{ runner.check_interval | default(3) }}
+
+[session_server]
+  session_timeout = 1800
+
+[[runners]]
+  name = "{{ runner.description }}"
+  url = "{{ gitlab_url }}"
+  id = {{ runner_id }}
+  token = "{{ runner_token }}"
+  executor = "docker"
+  [runners.custom_build_dir]
+  [runners.cache]
+    MaxUploadedArchiveSize = 0
+  [runners.docker]
+    tls_verify = false
+    image = "{{ runner.docker_image | default('docker:27-cli') }}"
+    privileged = {{ runner.privileged | default(false) | lower }}
+    disable_entrypoint_overwrite = false
+    oom_kill_disable = false
+    disable_cache = false
+    volumes = {{ runner.docker_volumes | json }}
+    shm_size = 0

@@ -1,0 +1,9 @@
+# Managed by SaltStack GitOps. DO NOT EDIT DIRECTLY ON HOST.
+services:
+  gitlab-runner:
+    image: {{ runner_image | default('gitlab/gitlab-runner:v17.5.1') }}
+    container_name: gitlab-runner
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/gitlab-runner:/etc/gitlab-runner

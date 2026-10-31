@@ -1,0 +1,100 @@
+# GitLab CI/CD Pipeline: SaltStack GitOps Workflow for GitLab Runners
+# Strict MR Approve enforcement: Apply only executes on post-merge to 'main'
+
+stages:
+  - lint
+  - plan
+  - apply
+
+variables:
+  SALT_MASTER_URL: "https://salt-master.internal:8000"
+  SALT_TARGET: "runner-*"
+
+# 1. Синтаксическая проверка SLS и YAML
+lint_syntax:
+  stage: lint
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache yamllint
+  script:
+    - yamllint -d "{extends: relaxed, rules: {line-length: disable}}" pillar/ salt/
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# 2. DRY-RUN (Plan): запускается ТОЛЬКО в Merge Request
+# Выполняет state.apply test=True через Salt-API и выводит планируемый diff
+plan_mr:
+  stage: plan
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache curl jq
+  script:
+    - echo "=== Получение токена Salt-API ==="
+    - |
+      SALT_TOKEN=$(curl -sS -k "${SALT_MASTER_URL}/login" \
+        -H "Accept: application/json" \
+        -d username="${SALT_API_USER}" \
+        -d password="${SALT_API_PASSWORD}" \
+        -d eauth="pam" | jq -r '.return[0].token')
+      if [ -z "$SALT_TOKEN" ] || [ "$SALT_TOKEN" = "null" ]; then
+        echo "Ошибка авторизации в Salt-API" >&2
+        exit 1
+      fi
+    - echo "=== DRY-RUN: Проверка планируемых изменений (test=True) ==="
+    - |
+      curl -sS -k "${SALT_MASTER_URL}/" \
+        -H "Accept: application/json" \
+        -H "X-Auth-Token: ${SALT_TOKEN}" \
+        -d client="local" \
+        -d tgt="${SALT_TARGET}" \
+        -d fun="state.apply" \
+        -d arg="gitlab_runner" \
+        -d kwarg='{"test": true}' | jq .
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+# 3. APPLY: запускается ТОЛЬКО после утверждения (Approve) и слияния в ветку main
+apply_main:
+  stage: apply
+  image: alpine:3.20
+  environment:
+    name: production
+  before_script:
+    - apk add --no-cache curl jq
+  script:
+    - echo "=== Получение токена Salt-API ==="
+    - |
+      SALT_TOKEN=$(curl -sS -k "${SALT_MASTER_URL}/login" \
+        -H "Accept: application/json" \
+        -d username="${SALT_API_USER}" \
+        -d password="${SALT_API_PASSWORD}" \
+        -d eauth="pam" | jq -r '.return[0].token')
+      if [ -z "$SALT_TOKEN" ] || [ "$SALT_TOKEN" = "null" ]; then
+        echo "Ошибка авторизации в Salt-API" >&2
+        exit 1
+      fi
+    - echo "=== Синхронизация репозитория на Salt Master ==="
+    - |
+      curl -sS -k "${SALT_MASTER_URL}/" \
+        -H "Accept: application/json" \
+        -H "X-Auth-Token: ${SALT_TOKEN}" \
+        -d client="runner" \
+        -d fun="fileserver.update" | jq .
+    - echo "=== Применение целевого состояния на раннерах ==="
+    - |
+      RESULT=$(curl -sS -k "${SALT_MASTER_URL}/" \
+        -H "Accept: application/json" \
+        -H "X-Auth-Token: ${SALT_TOKEN}" \
+        -d client="local" \
+        -d tgt="${SALT_TARGET}" \
+        -d fun="state.apply" \
+        -d arg="gitlab_runner")
+      echo "$RESULT" | jq .
+      FAILED=$(echo "$RESULT" | jq '[.return[0][] | to_entries[] | select(.value.result == false)] | length')
+      if [ "$FAILED" -gt 0 ]; then
+        echo "ОШИБКА: Сбой применения конфигурации на раннерах ($FAILED неудачных состояний)!" >&2
+        exit 1
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'

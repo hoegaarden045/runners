@@ -1,0 +1,4 @@
+base:
+  'runner-*':
+    - common
+    - runners
