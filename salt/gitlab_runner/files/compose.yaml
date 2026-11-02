@@ -1,7 +1,7 @@
-# Managed by SaltStack GitOps. DO NOT EDIT DIRECTLY ON HOST.
+# Managed by Salt. Edit this file in the repository.
 services:
   gitlab-runner:
-    image: {{ runner_image | default('gitlab/gitlab-runner:v17.5.1') }}
+    image: gitlab/gitlab-runner:v17.5.1
     container_name: gitlab-runner
     restart: unless-stopped
     volumes:

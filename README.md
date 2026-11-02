@@ -1,184 +1,146 @@
-# GitOps-управление GitLab Runners на Debian 13 через SaltStack
+# GitLab project runners managed by Salt
 
-Данный репозиторий реализует полную **GitOps-модель** развертывания и управления жизненным циклом GitLab Docker Runners на 3 виртуальных машинах под управлением Debian 13 (Trixie) без использования Kubernetes.
+Target: Debian 13 minions, Salt 3008 and GitLab 17.x.
+The configuration has not been validated on a live installation.
 
-Все конфигурации выполнены **исключительно в виде SaltStack SLS-манифестов и Jinja-шаблонов** (без сторонних Python-скриптов в репозитории).
+## Configuration layout
 
----
-
-## 1. Архитектурная схема
-
-```
-                 GitLab Repository (Source of Truth)
-                                │
-          ┌─────────────────────┴─────────────────────┐
-          ▼                                           ▼
-   Merge Request (test=True)                   Merge to 'main'
-   • Автоматический Dry-Run                    • Требует обязательный Approve
-   • Вывод diff в лог CI/CD                    • Запуск боевого применения
-                                                      │
-                                                      ▼
-                                            Salt Master (Salt-API)
-                                                      │ ZeroMQ
-                         ┌────────────────────────────┼────────────────────────────┐
-                         ▼                            ▼                            ▼
-                 Debian 13 (VM 1)             Debian 13 (VM 2)             Debian 13 (VM 3)
-                 runner-debian-01             runner-debian-02             runner-debian-03
-                 ┌──────────────────┐         ┌──────────────────┐         ┌──────────────────┐
-                 │ .runner_auth     │         │ .runner_auth     │         │ .runner_auth     │
-                 │ config.toml      │         │ config.toml      │         │ config.toml      │
-                 │ docker compose   │         │ docker compose   │         │ docker compose   │
-                 └──────────────────┘         └──────────────────┘         └──────────────────┘
+```text
+salt/gitlab_runner/
+  init.sls
+  map.jinja
+  prepare.sls
+  register.sls
+  configure.sls
+  service.sls
+  certs/rootca.crt
+  files/
+    compose.yaml
+    gitlab-runner-compose.service
+  runners/
+    runner-minon1/settings.yaml
+    runner-minon1/config.toml.j2
+    runner-minon2/settings.yaml
+    runner-minon2/config.toml.j2
+    runner-minon3/settings.yaml
+    runner-minon3/config.toml.j2
 ```
 
----
+Directory names must match minion IDs. Both top files and CI target
+`runner-minon*`. To add a runner, copy a directory and submit a merge request.
 
-## 2. Структура репозитория
+- `settings.yaml`: GitLab URL and creation parameters under `api`.
+  Set the real URL and project ID before deployment.
+- `config.toml.j2`: per-runner process configuration. Edit concurrency and
+  Docker executor settings directly in this file. ID/token are read locally.
+- `files/compose.yaml`: shared Compose configuration using Runner v17.5.1.
+- `certs/rootca.crt`: replace the existing placeholder with the real PEM CA.
 
-```
-.
-├── .gitignore
-├── .gitlab-ci.yml                      # CI/CD: dry-run в MR, деплой при слиянии в main
-├── README.md
-├── pillar/
-│   ├── top.sls                         # Маппинг хостов к pillar
-│   ├── common.sls                      # Общие параметры (URL GitLab, базовый образ раннера)
-│   └── runners.sls                     # Конфигурация каждого раннера (теги, описание, concurrency)
-└── salt/
-    ├── top.sls                         # Маппинг состояний к миньонам
-    └── gitlab_runner/
-        ├── certs/
-        │   └── rootca.crt              # Корневой сертификат CA для связи с GitLab
-        ├── init.sls                    # Идемпотентное SLS-состояние (регистрация, update, deploy)
-        └── templates/
-            ├── config.toml.j2          # Шаблон конфигурации gitlab-runner (с tls-ca-file)
-            └── compose.yaml.j2         # Шаблон compose.yaml сервиса
-```
+Files under `salt/` are not a secret store: other minions may access them.
+Supply `gitlab_api_token` through private Pillar outside this repository,
+targeted to the intended minions. Check token permissions against the installed
+GitLab release. The token is required only when local registration is absent.
 
-### Структура файлов на целевой ВМ Debian 13 (`/opt/runner/`):
-```
+## Registration
+
+The minion registers through the native `http.query` state. There are no custom
+Salt states, `cmd.*` states, shell scripts, curl or jq dependencies on the minion.
+
+SLS files use `unless`/`onlyif` for local file checks and `require`/`require_in`
+for dependencies. Jinja loads settings and supplies values, without selecting
+state branches. The native `test.*` states are configuration checks, not a
+separate automated test suite. Missing settings block dependent states; the API
+token check is skipped when local registration already exists.
+
+1. If `/opt/runner/config/.runner_auth` exists, skip creation.
+2. Without that file, refuse creation if config.toml already exists.
+3. Otherwise POST /api/v4/user/runners using settings.api and the private API token.
+4. Save the response, including ID/token, in `.runner_auth` through `text_out`.
+   Require HTTP 201 and enforce file permissions 0600.
+5. Render config.toml and manage the Compose service.
+
+If GitLab creates the runner but the response is not saved, another run can create
+a duplicate. Investigate interrupted creation before retrying. Salt runs must not
+be started concurrently; the file checks are not an atomic distributed lock.
+
+Existence of `.runner_auth` prevents another POST; it does not validate credentials
+with GitLab. A malformed file will fail TOML rendering rather than recreate the
+runner. Existing config.toml without .runner_auth is not imported automatically.
+
+API parameters are creation-only in this version. Editing tags, description,
+locked or other API settings after registration does not update GitLab.
+There is no GET/PUT reconciliation and no `.runner_meta`. Old runtime metadata
+files are not automatically deleted.
+
+The HTTP state may return the registration response in Salt results. CI prints
+only state names and result flags, but result.json and Salt job caches may still
+contain the token. Full result handling is deferred as agreed; restrict access
+to these files and do not publish them as CI artifacts.
+
+## Runner configuration and Compose
+
+The managed VM layout is:
+
+```text
 /opt/runner/
-├── compose.yaml                    # Сервис gitlab-runner
-├── config/                         # Прокинута в /etc/gitlab-runner в контейнере
-│   ├── config.toml                 # Целевой конфиг раннера (с tls-ca-file)
-│   ├── .runner_auth                # ID и секретный токен glrt-... (chmod 600)
-│   └── .runner_meta                # Хэш отслеживания изменений тегов/описания
-└── certs/                          # Прокинута в /etc/gitlab-runner/certs в контейнере
-    └── rootca.crt                  # Корневой сертификат CA
+  compose.yaml
+  config/
+    config.toml
+    .runner_auth
+  certs/
+    rootca.crt
 ```
 
----
+Directories have mode 0700; config.toml and .runner_auth have mode 0600.
+TOML diffs are suppressed. The template reads ID/token after registration; its
+placeholder values are for first-run dry-runs only, not a valid runner identity.
 
-## 3. Выполнение всех требований задачи
+Docker Engine, the Docker Compose plugin and systemd must already be available.
+The unit assumes the Docker CLI is installed at /usr/bin/docker.
+Salt installs a systemd unit and uses `service.running` to enable/start it.
+The unit runs Compose up -d on start/reload and Compose stop on stop.
+Compose/unit changes trigger a reload; TOML changes rely on Runner's own reload.
+This is a oneshot service: its active status does not prove the container is
+healthy or recover a manually removed container on every Salt run.
+The container retains the Compose restart policy unless-stopped.
 
-| № | Требование | Как реализовано в данном репозитории |
-| :--- | :--- | :--- |
-| **1** | Развертывание через Docker Compose | Шаблон `docker-compose.yml.j2` + состояние `cmd.run: docker compose up -d`. |
-| **2** | Автоматическая регистрация с тегами и описанием | Нативный Salt-модуль `http.query` (POST `/api/v4/user/runners`) с валидацией статуса `201` и сохранением токена в `text_out`. |
-| **3** | Применение изменений тегов/описания из репозитория | Файл `/etc/gitlab-runner/.runner_meta` отслеживает diff в Git. При его изменении срабатывает `update_gitlab_runner_metadata` через нативный `http.query` (PUT `/api/v4/runners/{id}`). |
-| **4** | `config.toml` хранится в репозитории | Шаблон `salt/gitlab_runner/templates/config.toml.j2` полностью описывает целевой `config.toml`. |
-| **5** | Применение изменений `config.toml` на раннере | `file.managed` обновляет `/etc/gitlab-runner/config.toml`. Демон `gitlab-runner` внутри контейнера перечитывает файл на лету каждые 3 секунды. |
-| **6** | Изменения только через Approve Merge Request | В `.gitlab-ci.yml` этап `apply_main` запускается **только** на ветке `main`. Ветка `main` защищена (`Protected Branch`), слияние заблокировано до получения Approve. |
-| **7** | Однократное создание раннера (идемпотентность) | Директива `unless: test -s /etc/gitlab-runner/.runner_auth` на модуле `http.query` гарантирует, что регистрация раннера вызывается ровно один раз. Токен сохраняется локально. |
-| **8** | Без Kubernetes | Работает на чистом Docker Compose и Debian 13. |
-| **9** | Тип раннера `docker` | В `config.toml.j2` зафиксирован `executor = "docker"` с монтированием `/var/run/docker.sock`. |
-| **10** | GitOps подход | Вся конфигурация раннеров версионируется в Git. Ручные изменения на ВМ перезаписываются SaltStack. |
+The default job configuration retains the Docker socket mount, allowing jobs
+to control the host Docker daemon.
+Automatic authentication-token rotation is not reconciled with .runner_auth;
+resolve token ownership before applying these templates if rotation is enabled.
 
----
+## CI and Salt Master
 
-## 4. Как это работает (Детальный цикл жизни)
+Required CI variables:
 
-### А. Первичная инициализация (первый запуск)
-1. Salt запускает состояние `gitlab_runner/init.sls`.
-2. Проверяется условие `creates: /etc/gitlab-runner/.runner_auth`. Так как файла еще нет, выполняется `POST /api/v4/user/runners` в GitLab API.
-3. GitLab создает раннер с указанными тегами и описанием и возвращает JSON с `id` и `token` (`glrt-...`).
-4. Токен и ID сохраняются в `/etc/gitlab-runner/.runner_auth` с правами `0600`.
-5. Salt рендерит `config.toml` через Jinja. Фильтр `load_json` читает токен из `.runner_auth` и подставляет в строку `token = "glrt-..."`.
-6. Salt рендерит `docker-compose.yml` и запускает `docker compose up -d`.
+- `SALT_MASTER_URL`: HTTPS Salt API endpoint.
+- `SALT_API_USER` and `SALT_API_PASSWORD`: restricted Salt API credentials.
+- `SALT_API_CA`: GitLab File variable containing the Salt API CA certificate.
 
-### Б. Изменение тегов или описания раннера
-1. Инженер открывает Merge Request и правит теги в `pillar/runners.sls`:
-   ```yaml
-   runner-debian-01:
-     tags:
-       - docker
-       - debian13
-       - new-custom-tag  # <--- Добавлен новый тег
-   ```
-2. В MR автоматически отрабатывает джоба `plan_mr` с `test=True`. В логе видно, какие изменения планируются.
-3. Лид делает **Approve** и нажимает **Merge**.
-4. Запускается джоба `apply_main`:
-   - Salt Master применяет состояние к `runner-debian-01`.
-   - Salt видит, что содержимое файла `/etc/gitlab-runner/.runner_meta` изменилось.
-   - Триггер `onchanges` запускает `PUT /api/v4/runners/{id}` в API GitLab.
-   - **Результат:** Теги в GitLab обновлены мгновенно. Раннер не пересоздавался, контейнер не перезапускался.
+CI still uses curl/jq inside its job image to call Salt API; these are not Salt
+cmd modules or minion dependencies. Credentials must be scoped to trusted
+pipelines. Configure protected main and merge approvals in GitLab itself.
+Use a management CI runner independent of the managed runner fleet.
 
-### В. Изменение параметров `config.toml` (например, `concurrency`)
-1. Инженер правит `concurrency: 8` в `pillar/runners.sls`.
-2. После Approve и Merge Salt перерендеривает `/etc/gitlab-runner/config.toml`.
-3. Контейнер `gitlab-runner` подхватывает новое значение `concurrency` на лету в течение 3 секунд.
+The Salt API identity needs fileserver.update runner access and state.apply on
+the intended minions. Configure GitFS with salt/ as root and main mapped to base.
+Expose MR source branches as environments. Both plan and apply use base Pillar
+for private data. These are existing Master prerequisites, not configured here.
 
----
+MR pipelines run YAML linting and Salt test=True against the source branch.
+Main pipelines apply base. Apply jobs are serialized. Empty responses, missing
+minions and failed Salt states fail the job.
+Branch environments are mutable: deployment is not pinned to an immutable SHA.
+Dry-run does not register a runner or validate the real API response.
 
-## 5. Настройка окружения
+## Validation and rollback
 
-### На стороне GitLab:
-1. **Protected Branches:**
-   - Перейти в **Settings -> Repository -> Protected Branches**.
-   - Для ветки `main`: `Allowed to merge: Developers + Maintainers`, `Allowed to push: No one`.
-2. **Merge Request Approvals:**
-   - Перейти в **Settings -> Merge requests -> Merge request approvals**.
-   - Включить `Require approval` (указать минимум 1 аппрувера).
-   - Включить опции `Prevent approval by author` и `Reset approvals on push`.
-3. **CI/CD Variables (Settings -> CI/CD -> Variables):**
-   - `SALT_MASTER_URL`: URL вашего Salt-API (например, `https://salt-master.internal:8000`).
-   - `SALT_API_USER`: пользователь с правами вызова Salt-API.
-   - `SALT_API_PASSWORD`: пароль пользователя Salt-API (Masked).
+No tests were written or run. Syntax checks, Salt rendering, API requests,
+package installation and deployment have not been executed during authoring.
 
-### На стороне Salt Master:
-Включить и настроить `salt-api` (модуль `rest_cherrypy`):
-```yaml
-# /etc/salt/master.d/api.conf
-rest_cherrypy:
-  port: 8000
-  ssl_crt: /etc/pki/tls/certs/saltapi.crt
-  ssl_key: /etc/pki/tls/certs/saltapi.key
-
-external_auth:
-  pam:
-    gitlab-ci:
-      - 'runner-*':
-        - state.apply
-        - fileserver.update
-        - saltutil.refresh_pillar
-```
-
-### Настройка получения Pillar и States из удаленного репозитория Git (Salt Master):
-Для загрузки `pillar/` и `salt/` напрямую из GitLab репозитория создайте файл `/etc/salt/master.d/gitfs_and_pillar.conf`:
-
-```yaml
-# 1. Провайдер Git (на Debian 13: apt install python3-pygit2)
-git_pillar_provider: pygit2
-gitfs_provider: pygit2
-
-# 2. Подключение внешнего Pillar из поддиректории pillar/
-ext_pillar:
-  - git:
-      - main git@gitlab.example.com:devops/gitlab-runners-gitops.git:
-          - root: pillar
-          - privkey: /etc/salt/pki/master/git_deploy_key
-          - pubkey: /etc/salt/pki/master/git_deploy_key.pub
-
-# 3. Подключение состояний SLS из поддиректории salt/
-fileserver_backend:
-  - roots
-  - git
-
-gitfs_remotes:
-  - git@gitlab.example.com:devops/gitlab-runners-gitops.git:
-      - root: salt
-      - base: main
-      - privkey: /etc/salt/pki/master/git_deploy_key
-      - pubkey: /etc/salt/pki/master/git_deploy_key.pub
-```
-
+Validate registration, repeat application, TOML edits and failed registration
+on a non-production minion before rollout.
+Rollback: restore the previous repository configuration and apply it while
+preserving .runner_auth. No GitLab object should be deleted as part of rollback.
+The added systemd unit must be accounted for when returning to another service
+management method; stopping it stops the Compose project.

@@ -1,4 +1,3 @@
 base:
-  'runner-*':
+  'runner-minon*':
     - common
-    - runners

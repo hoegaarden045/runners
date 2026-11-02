@@ -1,0 +1,13 @@
+# Set the GitLab URL and project ID before deployment.
+gitlab_url: https://gitlab.example.com
+api:
+  runner_type: project_type
+  project_id: null
+  description: "runner-minon2 (Heavy builds)"
+  tag_list:
+    - docker
+    - debian13
+    - worker-02
+    - high-cpu
+  locked: true
+  run_untagged: false

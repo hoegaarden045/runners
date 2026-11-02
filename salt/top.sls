@@ -1,3 +1,3 @@
 base:
-  'runner-*':
+  'runner-minon*':
     - gitlab_runner
