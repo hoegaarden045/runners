@@ -1,5 +1,5 @@
 # Managed by SaltStack GitOps. DO NOT EDIT DIRECTLY ON HOST.
-{%- set auth_file = '/etc/gitlab-runner/.runner_auth' -%}
+{%- set auth_file = '/opt/runner/config/.runner_auth' -%}
 {%- if salt['file.file_exists'](auth_file) -%}
   {%- set auth = salt['file.read'](auth_file) | load_json -%}
   {%- set runner_token = auth.get('token', '') -%}
@@ -20,12 +20,13 @@ check_interval = {{ runner.check_interval | default(3) }}
   url = "{{ gitlab_url }}"
   id = {{ runner_id }}
   token = "{{ runner_token }}"
+  tls-ca-file = "/etc/gitlab-runner/certs/rootca.crt"
   executor = "docker"
   [runners.custom_build_dir]
   [runners.cache]
     MaxUploadedArchiveSize = 0
   [runners.docker]
-    tls_verify = false
+    tls_verify = {{ runner.tls_verify | default(true) | lower }}
     image = "{{ runner.docker_image | default('docker:27-cli') }}"
     privileged = {{ runner.privileged | default(false) | lower }}
     disable_entrypoint_overwrite = false

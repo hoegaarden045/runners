@@ -6,4 +6,5 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /etc/gitlab-runner:/etc/gitlab-runner
+      - ./config:/etc/gitlab-runner
+      - ./certs:/etc/gitlab-runner/certs

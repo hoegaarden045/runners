@@ -46,6 +46,17 @@ plan_mr:
       curl -sS -k "${SALT_MASTER_URL}/" \
         -H "Accept: application/json" \
         -H "X-Auth-Token: ${SALT_TOKEN}" \
+        -d client="runner" \
+        -d fun="fileserver.update" | jq .
+      curl -sS -k "${SALT_MASTER_URL}/" \
+        -H "Accept: application/json" \
+        -H "X-Auth-Token: ${SALT_TOKEN}" \
+        -d client="local" \
+        -d tgt="${SALT_TARGET}" \
+        -d fun="saltutil.refresh_pillar" | jq .
+      curl -sS -k "${SALT_MASTER_URL}/" \
+        -H "Accept: application/json" \
+        -H "X-Auth-Token: ${SALT_TOKEN}" \
         -d client="local" \
         -d tgt="${SALT_TARGET}" \
         -d fun="state.apply" \
@@ -74,13 +85,19 @@ apply_main:
         echo "Ошибка авторизации в Salt-API" >&2
         exit 1
       fi
-    - echo "=== Синхронизация репозитория на Salt Master ==="
+    - echo "=== Синхронизация файлов и Pillar на Salt Master ==="
     - |
       curl -sS -k "${SALT_MASTER_URL}/" \
         -H "Accept: application/json" \
         -H "X-Auth-Token: ${SALT_TOKEN}" \
         -d client="runner" \
         -d fun="fileserver.update" | jq .
+      curl -sS -k "${SALT_MASTER_URL}/" \
+        -H "Accept: application/json" \
+        -H "X-Auth-Token: ${SALT_TOKEN}" \
+        -d client="local" \
+        -d tgt="${SALT_TARGET}" \
+        -d fun="saltutil.refresh_pillar" | jq .
     - echo "=== Применение целевого состояния на раннерах ==="
     - |
       RESULT=$(curl -sS -k "${SALT_MASTER_URL}/" \

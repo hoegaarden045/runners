@@ -47,10 +47,24 @@
 └── salt/
     ├── top.sls                         # Маппинг состояний к миньонам
     └── gitlab_runner/
+        ├── certs/
+        │   └── rootca.crt              # Корневой сертификат CA для связи с GitLab
         ├── init.sls                    # Идемпотентное SLS-состояние (регистрация, update, deploy)
         └── templates/
-            ├── config.toml.j2          # Шаблон конфигурации gitlab-runner
-            └── docker-compose.yml.j2   # Шаблон docker-compose сервиса
+            ├── config.toml.j2          # Шаблон конфигурации gitlab-runner (с tls-ca-file)
+            └── compose.yaml.j2         # Шаблон compose.yaml сервиса
+```
+
+### Структура файлов на целевой ВМ Debian 13 (`/opt/runner/`):
+```
+/opt/runner/
+├── compose.yaml                    # Сервис gitlab-runner
+├── config/                         # Прокинута в /etc/gitlab-runner в контейнере
+│   ├── config.toml                 # Целевой конфиг раннера (с tls-ca-file)
+│   ├── .runner_auth                # ID и секретный токен glrt-... (chmod 600)
+│   └── .runner_meta                # Хэш отслеживания изменений тегов/описания
+└── certs/                          # Прокинута в /etc/gitlab-runner/certs в контейнере
+    └── rootca.crt                  # Корневой сертификат CA
 ```
 
 ---
@@ -136,4 +150,35 @@ external_auth:
       - 'runner-*':
         - state.apply
         - fileserver.update
+        - saltutil.refresh_pillar
 ```
+
+### Настройка получения Pillar и States из удаленного репозитория Git (Salt Master):
+Для загрузки `pillar/` и `salt/` напрямую из GitLab репозитория создайте файл `/etc/salt/master.d/gitfs_and_pillar.conf`:
+
+```yaml
+# 1. Провайдер Git (на Debian 13: apt install python3-pygit2)
+git_pillar_provider: pygit2
+gitfs_provider: pygit2
+
+# 2. Подключение внешнего Pillar из поддиректории pillar/
+ext_pillar:
+  - git:
+      - main git@gitlab.example.com:devops/gitlab-runners-gitops.git:
+          - root: pillar
+          - privkey: /etc/salt/pki/master/git_deploy_key
+          - pubkey: /etc/salt/pki/master/git_deploy_key.pub
+
+# 3. Подключение состояний SLS из поддиректории salt/
+fileserver_backend:
+  - roots
+  - git
+
+gitfs_remotes:
+  - git@gitlab.example.com:devops/gitlab-runners-gitops.git:
+      - root: salt
+      - base: main
+      - privkey: /etc/salt/pki/master/git_deploy_key
+      - pubkey: /etc/salt/pki/master/git_deploy_key.pub
+```
+

@@ -1,6 +1,6 @@
 # SaltStack State: GitLab Docker Runner Deployment & GitOps Reconciliation
+# Isolated runner layout in /opt/runner with ./config and ./certs
 # Pure SLS & Native Salt Modules (http.query, file.managed, file.directory)
-# No Python scripts in repo, no cmd.run for HTTP/API
 
 {% set my_id = grains['id'] %}
 {% set runners = pillar.get('gitlab_runners', {}) %}
@@ -9,7 +9,13 @@
 {% set runner = runners[my_id] %}
 {% set gitlab_url = pillar.get('gitlab_url') %}
 {% set gitlab_api_token = pillar.get('gitlab_api_token') %}
-{% set auth_file = '/etc/gitlab-runner/.runner_auth' %}
+
+{% set runner_base_dir = '/opt/runner' %}
+{% set config_dir = runner_base_dir ~ '/config' %}
+{% set certs_dir = runner_base_dir ~ '/certs' %}
+{% set auth_file = config_dir ~ '/.runner_auth' %}
+{% set meta_file = config_dir ~ '/.runner_meta' %}
+{% set root_ca_file = certs_dir ~ '/rootca.crt' %}
 
 # Подготовка JSON-пейлоада для создания раннера
 {% set register_payload = {
@@ -20,20 +26,34 @@
     'locked': runner.get('locked', true)
 } %}
 
-# 1. Убеждаемся в наличии необходимых директорий
+# 1. Создание целевой структуры директорий в /opt/runner
 gitlab_runner_dirs:
   file.directory:
     - names:
-        - /etc/gitlab-runner
-        - /opt/gitlab-runner
+        - {{ runner_base_dir }}
+        - {{ config_dir }}
+        - {{ certs_dir }}
     - user: root
     - group: root
     - mode: '0750'
     - makedirs: True
 
-# 2. Нативный HTTP POST-запрос к GitLab API через state http.query
-# Выполняется ровно один раз: unless проверяет наличие непустого .runner_auth
-# Ответ API (id и токен glrt-...) сохраняется прямо в text_out
+# 2. Доставка корневого сертификата rootca.crt в /opt/runner/certs/
+{{ root_ca_file }}:
+  file.managed:
+    {% if pillar.get('gitlab_root_ca') %}
+    - contents: {{ pillar.get('gitlab_root_ca') | json }}
+    {% else %}
+    - source: salt://gitlab_runner/certs/rootca.crt
+    {% endif %}
+    - user: root
+    - group: root
+    - mode: '0644'
+    - require:
+      - file: gitlab_runner_dirs
+
+# 3. Нативная регистрация раннера в GitLab API через http.query
+# Выполняется ровно ОДИН раз (unless проверяет наличие сохраненного токена)
 register_gitlab_runner:
   http.query:
     - name: '{{ gitlab_url }}/api/v4/user/runners'
@@ -44,11 +64,13 @@ register_gitlab_runner:
     - data: '{{ register_payload | json }}'
     - status: 201
     - text_out: {{ auth_file }}
+    - ca_bundle: {{ root_ca_file }}
     - unless: test -s {{ auth_file }}
     - require:
       - file: gitlab_runner_dirs
+      - file: {{ root_ca_file }}
 
-# 3. Фиксация прав на сохраненный файл авторизации (chmod 0600)
+# 4. Фиксация прав на сохраненный файл авторизации (chmod 0600)
 {{ auth_file }}:
   file.managed:
     - replace: False
@@ -58,9 +80,8 @@ register_gitlab_runner:
     - require:
       - http: register_gitlab_runner
 
-# 4. Отслеживание изменений метаданных в Git (Pillar)
-# Файл .runner_meta меняется только если в Git изменены теги или описание
-/etc/gitlab-runner/.runner_meta:
+# 5. Отслеживание изменений метаданных в Git (теги, описание)
+{{ meta_file }}:
   file.managed:
     - contents: |
         description: {{ runner.description }}
@@ -73,8 +94,7 @@ register_gitlab_runner:
     - require:
       - file: gitlab_runner_dirs
 
-# 5. Нативное обновление метаданных в GitLab API через http.query (PUT)
-# Срабатывает только при наличии изменений в Git через onchanges
+# 6. Обновление метаданных в GitLab API (PUT) при наличии изменений в Git
 {% if salt['file.file_exists'](auth_file) %}
 {% set auth = salt['file.read'](auth_file) | load_json %}
 {% set runner_id = auth.get('id') %}
@@ -94,13 +114,14 @@ update_gitlab_runner_metadata:
         Content-Type: 'application/json'
     - data: '{{ update_payload | json }}'
     - status: 200
+    - ca_bundle: {{ root_ca_file }}
     - onchanges:
-      - file: /etc/gitlab-runner/.runner_meta
+      - file: {{ meta_file }}
 {% endif %}
 {% endif %}
 
-# 6. Декларативное управление config.toml из Jinja-шаблона
-/etc/gitlab-runner/config.toml:
+# 7. Декларативное управление config.toml в папке /opt/runner/config/
+{{ config_dir }}/config.toml:
   file.managed:
     - source: salt://gitlab_runner/templates/config.toml.j2
     - template: jinja
@@ -112,11 +133,12 @@ update_gitlab_runner_metadata:
         gitlab_url: {{ gitlab_url | json }}
     - require:
       - http: register_gitlab_runner
+      - file: {{ root_ca_file }}
 
-# 7. Декларативное управление docker-compose.yml
-/opt/gitlab-runner/docker-compose.yml:
+# 8. Декларативное управление compose.yaml в папке /opt/runner/
+{{ runner_base_dir }}/compose.yaml:
   file.managed:
-    - source: salt://gitlab_runner/templates/docker-compose.yml.j2
+    - source: salt://gitlab_runner/templates/compose.yaml.j2
     - template: jinja
     - user: root
     - group: root
@@ -126,15 +148,17 @@ update_gitlab_runner_metadata:
     - require:
       - file: gitlab_runner_dirs
 
-# 8. Запуск и поддержание контейнера через Docker Compose CLI
+# 9. Запуск и поддержание сервиса через Docker Compose CLI в /opt/runner
 gitlab_runner_service:
   cmd.run:
-    - name: docker compose -f /opt/gitlab-runner/docker-compose.yml up -d --remove-orphans
+    - name: docker compose -f {{ runner_base_dir }}/compose.yaml up -d --remove-orphans
+    - cwd: {{ runner_base_dir }}
     - require:
-      - file: /opt/gitlab-runner/docker-compose.yml
-      - file: /etc/gitlab-runner/config.toml
+      - file: {{ runner_base_dir }}/compose.yaml
+      - file: {{ config_dir }}/config.toml
+      - file: {{ root_ca_file }}
     - onchanges:
-      - file: /opt/gitlab-runner/docker-compose.yml
+      - file: {{ runner_base_dir }}/compose.yaml
 
 {% else %}
 
