@@ -3,6 +3,7 @@
 include:
   - gitlab_runner.prepare
   - gitlab_runner.register
+  - gitlab_runner.update_api
   - gitlab_runner.configure
   - gitlab_runner.service
 
@@ -15,6 +16,7 @@ gitlab_runner_settings_required:
     - require_in:
       - sls: gitlab_runner.prepare
       - sls: gitlab_runner.register
+      - sls: gitlab_runner.update_api
       - sls: gitlab_runner.configure
       - sls: gitlab_runner.service
 

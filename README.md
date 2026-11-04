@@ -39,7 +39,8 @@ Directory names must match minion IDs. Both top files and CI target
 Files under `salt/` are not a secret store: other minions may access them.
 Supply `gitlab_api_token` through private Pillar outside this repository,
 targeted to the intended minions. Check token permissions against the installed
-GitLab release. The token is required only when local registration is absent.
+GitLab release. The token is required for registration and API updates. Use the
+`manage_runner` scope and an appropriate project role for updates.
 
 ## Registration
 
@@ -67,10 +68,20 @@ Existence of `.runner_auth` prevents another POST; it does not validate credenti
 with GitLab. A malformed file will fail TOML rendering rather than recreate the
 runner. Existing config.toml without .runner_auth is not imported automatically.
 
-API parameters are creation-only in this version. Editing tags, description,
-locked or other API settings after registration does not update GitLab.
-There is no GET/PUT reconciliation and no `.runner_meta`. Old runtime metadata
-files are not automatically deleted.
+## Runner API updates
+
+Edit `description`, `tag_list`, `locked`, or `run_untagged` under `api` in
+`settings.yaml`. The minion writes these fields, the GitLab URL and the runner ID
+to `/opt/runner/config/.api_params` with mode 0600. Creating or changing this file
+triggers a PUT to the existing runner. The file contains no tokens.
+
+On initial registration, the POST supplies the settings and the first later
+apply creates `.api_params` and sends a PUT. Project ID and runner type are used
+for registration.
+
+TODO: Record successfully applied parameters only after HTTP 200 and retry a
+failed update. Currently the file changes before the request. Salt reports a
+failed PUT, and the next apply skips the request if the file does not change.
 
 The HTTP state may return the registration response in Salt results. CI prints
 only state names and result flags, but result.json and Salt job caches may still
@@ -87,6 +98,7 @@ The managed VM layout is:
   config/
     config.toml
     .runner_auth
+    .api_params
   certs/
     rootca.crt
 ```
