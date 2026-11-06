@@ -29,8 +29,9 @@ salt/gitlab_runner/
 Directory names must match minion IDs. Both top files and CI target
 `runner-minon*`. To add a runner, copy a directory and submit a merge request.
 
-- `settings.yaml`: GitLab URL and creation parameters under `api`.
-  Set the real URL and project ID before deployment.
+- `settings.yaml`: GitLab URL, creation-only fields under `registration`, and
+  shared runner API parameters under `api`. Move creation-only keys into
+  `registration` in custom configs.
 - `config.toml.j2`: per-runner process configuration. Edit concurrency and
   Docker executor settings directly in this file. ID/token are read locally.
 - `files/compose.yaml`: shared Compose configuration using Runner v17.5.1.
@@ -55,7 +56,9 @@ token check is skipped when local registration already exists.
 
 1. If `/opt/runner/config/.runner_auth` exists, skip creation.
 2. Without that file, refuse creation if config.toml already exists.
-3. Otherwise POST /api/v4/user/runners using settings.api and the private API token.
+3. Otherwise POST /api/v4/user/runners with the merged `api` and `registration`
+   blocks, using the private API token. If a key occurs in both blocks,
+   `registration` takes precedence for POST.
 4. Save the response, including ID/token, in `.runner_auth` through `text_out`.
    Require HTTP 201 and enforce file permissions 0600.
 5. Render config.toml and manage the Compose service.
@@ -68,12 +71,18 @@ Existence of `.runner_auth` prevents another POST; it does not validate credenti
 with GitLab. A malformed file will fail TOML rendering rather than recreate the
 runner. Existing config.toml without .runner_auth is not imported automatically.
 
+Set `registration.runner_type` to `project_type`, `group_type`, or
+`instance_type`. Supply `project_id` for a project runner or `group_id` for a
+group runner in the same block. For an instance runner, omit both IDs.
+GitLab validates the scope-specific fields when it receives the POST.
+
 ## Runner API updates
 
-Edit `description`, `tag_list`, `locked`, or `run_untagged` under `api` in
-`settings.yaml`. The minion writes these fields, the GitLab URL and the runner ID
-to `/opt/runner/config/.api_params` with mode 0600. Creating or changing this file
-triggers a PUT to the existing runner. The file contains no tokens.
+Add or edit parameters under `api` in `settings.yaml` using fields supported by
+both GitLab endpoints. The minion writes the entire `api` block, the GitLab URL,
+and the runner ID to `/opt/runner/config/.api_params` with mode 0600. Creating or
+changing this file triggers a PUT whose body is the `api` block. Keep credentials
+in private Pillar.
 
 On initial registration, the POST supplies the settings and the first later
 apply creates `.api_params` and sends a PUT. Project ID and runner type are used

@@ -7,14 +7,8 @@ gitlab_runner_api_update_deferred:
     - name: Runner API updates start on the first apply after registration.
 {% else %}
 {% set runner_id = (salt['file.read'](auth_file) | load_json).get('id') %}
-{% if runner_id is integer and runner_id > 0 %}
 {% set gitlab_url = settings.gitlab_url.rstrip('/') %}
-{% set api_params = {
-    'description': settings.api.description,
-    'tag_list': settings.api.tag_list,
-    'locked': settings.api.locked,
-    'run_untagged': settings.api.run_untagged,
-} %}
+{% set api_params = settings.api %}
 
 gitlab_runner_api_params:
   file.managed:
@@ -38,13 +32,6 @@ gitlab_runner_update_api:
     - ca_bundle: /opt/runner/certs/rootca.crt
     - require:
       - file: gitlab_runner_ca
-    # TODO: Save the applied parameters after HTTP 200 so a failed PUT is retried.
-    # Currently the file changes before the request, so the next apply skips it.
     - onchanges:
       - file: gitlab_runner_api_params
-{% else %}
-gitlab_runner_invalid_api_id:
-  test.fail_without_changes:
-    - name: Expected a positive integer runner ID in .runner_auth.
-{% endif %}
 {% endif %}

@@ -1,5 +1,6 @@
 {% from 'gitlab_runner/map.jinja' import settings with context %}
 {% set auth_file = '/opt/runner/config/.runner_auth' %}
+{% set registration_params = dict(settings.api, **settings.registration) %}
 
 gitlab_runner_existing_config:
   test.fail_without_changes:
@@ -18,7 +19,7 @@ gitlab_runner_registration:
     - header_dict:
         PRIVATE-TOKEN: {{ pillar.get('gitlab_api_token', '') | json }}
         Content-Type: application/json
-    - data: {{ settings.api | json | json }}
+    - data: {{ registration_params | json | json }}
     - status: 201
     - text_out: {{ auth_file }}
     - ca_bundle: /opt/runner/certs/rootca.crt

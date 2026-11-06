@@ -9,8 +9,8 @@ include:
 
 gitlab_runner_settings_required:
   test.configurable_test_state:
-    - name: Set gitlab_url and api.project_id in this runner's settings.yaml.
-    - result: {{ (settings.api.project_id and settings.gitlab_url != 'https://gitlab.example.com') | default(false, true) | json }}
+    - name: Set gitlab_url and registration.runner_type in this runner's settings.yaml.
+    - result: {{ (settings.registration.runner_type and settings.gitlab_url != 'https://gitlab.example.com') | default(false, true) | json }}
     - changes: false
     - allow_test_mode_failure: true
     - require_in:

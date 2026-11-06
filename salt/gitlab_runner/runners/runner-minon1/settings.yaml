@@ -1,8 +1,9 @@
 # Set the GitLab URL and project ID before deployment.
 gitlab_url: https://gitlab.example.com
-api:
+registration:
   runner_type: project_type
   project_id: null
+api:
   description: "runner-minon1 (General CI/CD)"
   tag_list:
     - docker
