@@ -1,110 +1,34 @@
-# States and secrets are served by the existing Salt Master.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
+
 stages:
-  - lint
-  - plan
-  - apply
+  - validate
+  - deploy
 
-variables:
-  SALT_TARGET: "runner-minon*"
-
-lint_syntax:
-  stage: lint
-  image: alpine:3.20
-  before_script:
-    - apk add --no-cache yamllint
-  script:
-    # SLS containing Jinja is compiled by the plan job, not parsed as plain YAML.
-    - |
-      yamllint -d "{extends: relaxed, rules: {line-length: disable}}" \
-        .gitlab-ci.yml pillar/ salt/top.sls \
-        salt/gitlab_runner/runners/ salt/gitlab_runner/files/
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-
-.salt_job:
-  image: alpine:3.20
-  before_script:
-    - apk add --no-cache curl jq
-    - |
-      set -eu
-      : "${SALT_MASTER_URL:?Set the Salt API URL}"
-      : "${SALT_API_CA:?Set a File variable containing the Salt API CA certificate}"
-      : "${SALT_API_USER:?Set the Salt API user}"
-      : "${SALT_API_PASSWORD:?Set the Salt API password}"
-      salt_api() {
-        curl --silent --show-error --fail --connect-timeout 10 --max-time 600 \
-          --header 'Accept: application/json' \
-          --cacert "$SALT_API_CA" "$@"
-      }
-      salt_api "${SALT_MASTER_URL%/}/login" \
-        --data-urlencode "username=$SALT_API_USER" \
-        --data-urlencode "password=$SALT_API_PASSWORD" \
-        --data-urlencode 'eauth=pam' > login.json
-      SALT_TOKEN=$(jq -er '.return[0].token | select(type == "string" and length > 0)' login.json)
-      rm login.json
-  script:
-    - |
-      set -eu
-      salt_api "${SALT_MASTER_URL%/}/" \
-        --header "X-Auth-Token: $SALT_TOKEN" \
-        --data-urlencode 'client=runner' \
-        --data-urlencode 'fun=fileserver.update' > fileserver.json
-      jq -e '.return | type == "array" and length > 0 and all(.[]; type == "object")' fileserver.json
-      if [ "$SALT_TEST" = true ]; then
-        SALT_ENV="$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
-      else
-        SALT_ENV=base
-      fi
-      KWARG=$(jq -nc --arg env "$SALT_ENV" --argjson test "$SALT_TEST" \
-        '{saltenv: $env, pillarenv: "base", test: $test}')
-      salt_api "${SALT_MASTER_URL%/}/" \
-        --header "X-Auth-Token: $SALT_TOKEN" \
-        --data-urlencode 'client=local' \
-        --data-urlencode "tgt=$SALT_TARGET" \
-        --data-urlencode 'fun=state.apply' \
-        --data-urlencode 'arg=gitlab_runner' \
-        --data-urlencode "kwarg=$KWARG" > result.json
-      # Do not print the http.query response body containing the runner token.
-      jq '.return[0] | to_entries[] | {minion: .key, states:
-        (if (.value | type) == "object" then
-          [.value | to_entries[] | {state: .key, result: .value.result}]
-        else "No state results" end)}' result.json
-      jq -e --argjson test "$SALT_TEST" '
-        .return[0] |
-        type == "object" and length > 0 and
-        all(.[];
-          type == "object" and length > 0 and
-          all(.[];
-            type == "object" and has("result") and
-            (.result == true or ($test and .result == null))
-          )
-        )' result.json
-      for settings in salt/gitlab_runner/runners/*/settings.yaml; do
-        minion=${settings%/settings.yaml}
-        minion=${minion##*/}
-        case "$minion" in
-          $SALT_TARGET)
-            jq -e --arg minion "$minion" '.return[0] | has($minion)' result.json
-            ;;
-        esac
-      done
-
-plan_mr:
-  extends: .salt_job
-  stage: plan
-  variables:
-    SALT_TEST: "true"
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-
-apply_main:
-  extends: .salt_job
-  stage: apply
+.salt_ssh:
+  image: docker:27-cli
+  tags:
+    - salt-deploy
   resource_group: gitlab-runners
-  variables:
-    SALT_TEST: "false"
-  environment:
-    name: production
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+  before_script:
+    - chmod 600 "$SSH_PRIVATE_KEY"
+    - |
+      ssh_master() {
+        ssh -T -i "$SSH_PRIVATE_KEY" \
+          -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10 \
+          -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" \
+          -l "$SALT_MASTER_USER" -- "$SALT_MASTER_HOST" "$@"
+      }
+
+validate:
+  extends: .salt_ssh
+  stage: validate
+  script:
+    - ssh_master "salt-run fileserver.update && salt --out=highstate --state-output=terse 'runner-minon*' state.apply saltenv=base test=True"
+
+deploy:
+  extends: .salt_ssh
+  stage: deploy
+  script:
+    - ssh_master "salt --out=highstate --state-output=terse 'runner-minon*' state.apply saltenv=base"
