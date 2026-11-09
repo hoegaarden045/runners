@@ -1,9 +1,6 @@
-{% if salt['file.file_exists']('/opt/runner/config/.runner_auth') %}
 {% set auth = salt['file.read']('/opt/runner/config/.runner_auth') | load_json %}
-{% else %}
-{% set auth = {'id': 0, 'token': 'PENDING_REGISTRATION'} %}
-{% endif %}
 # Managed by Salt. Edit the template in the repository.
+
 concurrent = 8
 check_interval = 3
 

@@ -11,7 +11,9 @@ gitlab_runner_config:
     - group: root
     - mode: '0600'
     - show_changes: false
-    - backup: ''
+    - onlyif:
+      - fun: file.file_exists
+        path: /opt/runner/config/.runner_auth
     - require:
       - file: gitlab_runner_auth_permissions
 
