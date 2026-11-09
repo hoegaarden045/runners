@@ -16,13 +16,3 @@ gitlab_runner_config:
         path: /opt/runner/config/.runner_auth
     - require:
       - file: gitlab_runner_auth_permissions
-
-gitlab_runner_compose:
-  file.managed:
-    - name: /opt/runner/compose.yaml
-    - source: salt://gitlab_runner/files/compose.yaml
-    - user: root
-    - group: root
-    - mode: '0644'
-    - require:
-      - file: gitlab_runner_dirs

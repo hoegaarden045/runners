@@ -1,2 +1,2 @@
-{% set runner_dir = 'gitlab_runner/runners/' ~ grains['id'] %}
+{% set runner_dir = 'runners/' ~ grains['id'] %}
 {% import_yaml runner_dir ~ '/settings.yaml' as settings %}

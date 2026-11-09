@@ -5,7 +5,7 @@
 
 ## Принцип работы
 
-1. Salt выбирает каталог `salt/gitlab_runner/runners/<minion-id>/` и читает `settings.yaml` и `config.toml.j2`.
+1. Salt выбирает каталог `salt/runners/<minion-id>/` и читает `settings.yaml` и `config.toml.j2`.
 2. При первом запуске Salt регистрирует раннер в GitLab через POST. В запрос идут поля из `api` и `registration`. При совпадении ключей приоритет у `registration`. GitLab возвращает ID и токен, Salt сохраняет их в `/opt/runner/config/.runner_auth`.
 3. При повторном запуске Salt **пропускает регистрацию**, если существует `.runner_auth`. Для существующего раннера Salt записывает поля из `api` в `.api_params` и отправляет PUT по сохранённому ID при создании или изменении файла.
 4. Salt формирует `config.toml` с локальным ID и токеном и запускает Compose через systemd.
