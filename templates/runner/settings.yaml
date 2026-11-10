@@ -1,0 +1,12 @@
+# Указать адрес GitLab, область регистрации и параметры нового раннера.
+gitlab_url: https://gitlab.example.com
+registration:
+  runner_type: project_type
+  project_id: null
+api:
+  description: "runner-name"
+  tag_list:
+    - docker
+    - debian13
+  locked: true
+  run_untagged: false

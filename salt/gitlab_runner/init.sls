@@ -5,7 +5,7 @@ include:
   - gitlab_runner.register
   - gitlab_runner.update_api
   - gitlab_runner.configure
-  - gitlab_runner.service
+  - gitlab_runner.run
 
 gitlab_runner_settings_required:
   test.configurable_test_state:
@@ -18,7 +18,7 @@ gitlab_runner_settings_required:
       - sls: gitlab_runner.register
       - sls: gitlab_runner.update_api
       - sls: gitlab_runner.configure
-      - sls: gitlab_runner.service
+      - sls: gitlab_runner.run
 
 gitlab_runner_token_required:
   test.configurable_test_state:
@@ -33,4 +33,4 @@ gitlab_runner_token_required:
       - sls: gitlab_runner.prepare
       - sls: gitlab_runner.register
       - sls: gitlab_runner.configure
-      - sls: gitlab_runner.service
+      - sls: gitlab_runner.run
