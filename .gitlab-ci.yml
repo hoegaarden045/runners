@@ -6,6 +6,11 @@ stages:
   - validate
   - deploy
 
+variables:
+  SSH_OPTIONS: >-
+    -T -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10
+    -o StrictHostKeyChecking=yes
+
 .salt_ssh:
   image: docker:27-cli
   tags:
@@ -13,22 +18,23 @@ stages:
   resource_group: gitlab-runners
   before_script:
     - chmod 600 "$SSH_PRIVATE_KEY"
-    - |
-      ssh_master() {
-        ssh -T -i "$SSH_PRIVATE_KEY" \
-          -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10 \
-          -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS" \
-          -l "$SALT_MASTER_USER" -- "$SALT_MASTER_HOST" "$@"
-      }
 
 validate:
   extends: .salt_ssh
   stage: validate
   script:
-    - ssh_master "salt-run fileserver.update && salt --out=highstate --state-output=terse 'runner-minon*' state.apply saltenv=base test=True"
+    - >-
+      ssh $SSH_OPTIONS -i "$SSH_PRIVATE_KEY"
+      -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS"
+      -l "$SALT_MASTER_USER" -- "$SALT_MASTER_HOST"
+      "salt-run fileserver.update && salt --out=highstate --state-output=terse 'runner-minon*' state.apply saltenv=base test=True"
 
 deploy:
   extends: .salt_ssh
   stage: deploy
   script:
-    - ssh_master "salt --out=highstate --state-output=terse 'runner-minon*' state.apply saltenv=base"
+    - >-
+      ssh $SSH_OPTIONS -i "$SSH_PRIVATE_KEY"
+      -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS"
+      -l "$SALT_MASTER_USER" -- "$SALT_MASTER_HOST"
+      "salt --out=highstate --state-output=terse 'runner-minon*' state.apply saltenv=base"
